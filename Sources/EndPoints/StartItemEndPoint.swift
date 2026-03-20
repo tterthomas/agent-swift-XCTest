@@ -1,4 +1,4 @@
-//  Created by Stas Kirichok on 23-08-2018.
+/  Created by Stas Kirichok on 23-08-2018.
 //  Copyright 2025 EPAM Systems
 //  
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,31 +13,43 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
-
 import Foundation
-
 struct StartItemEndPoint: EndPoint {
-
   let method: HTTPMethod = .post
   var relativePath: String
   let parameters: [String : Any]
 
-  init(itemName: String, parentID: String? = nil, launchID: String, type: TestType, attributes: [[String: String]] = []) {
+  init(itemName: String, parentID: String? = nil, launchID: String, type: TestType, attributes: [[String: String]] = [], isRetry: Bool = false) {
     relativePath = "item"
     if let parentID = parentID {
       relativePath += "/\(parentID)"
     }
 
     // V2 API uses camelCase parameter names (launchUuid not launch_id)
-    parameters = [
+    var params: [String: Any] = [
       "description": "",
       "launchUuid": launchID,  // V2 API: camelCase
       "name": itemName,
+
+    
+        
+          
+    
+
+        
+        Expand All
+    
+    @@ -38,6 +38,10 @@ struct StartItemEndPoint: EndPoint {
+  
       "start_time": TimeHelper.currentTimeAsString(),
       "tags": [],
       "type": type.rawValue,
       "attributes": attributes
     ]
+    if isRetry {
+      params["retry"] = true
+    }
+    parameters = params
   }
 
 }
