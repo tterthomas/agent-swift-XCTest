@@ -45,7 +45,6 @@ struct StartLaunchEndPoint: EndPoint {
       "mode": mode.rawValue,
       "name": launchName,
       "start_time": TimeHelper.currentTimeAsString(),
-      "tags": TagHelper.defaultTags + tags,
       "attributes": attributes,
       "uuid": uuid  // REQUIRED in V2 API
     ]
