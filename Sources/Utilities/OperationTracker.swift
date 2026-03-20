@@ -148,14 +148,42 @@ actor OperationTracker {
         throw OperationTrackerError.suiteTimeout(identifier: identifier, seconds: timeout)
     }
 
+    /// Wait for test to be registered AND have a valid test ID from ReportPortal
+    /// This is needed because failure callbacks fire before startTest API call completes,
+    /// and because retry runs reuse the same base identifier
+    /// - Parameters:
+    ///   - identifier: Run-specific test identifier to wait for (format: "Class.testMethod-run-N")
+    ///   - timeout: Maximum wait time in seconds (default: 10)
+    /// - Returns: Test operation when registered AND has valid test ID
+    /// - Throws: OperationTrackerError.testTimeout if test not registered within timeout
+    func waitForTest(identifier: String, timeout: TimeInterval = 10) async throws -> TestOperation {
+        // Check if test already exists AND has a valid test ID
+        if let test = testOperations[identifier], !test.testID.isEmpty {
+            Logger.shared.info("✅ Test '\(identifier)' already registered with ID")
+            return test
+        }
 
+        // Wait for it using efficient polling (20ms intervals)
+        Logger.shared.info("⏳ Waiting for test '\(identifier)' to be registered with test ID...")
 
+        let startTime = Date()
+        let maxAttempts = Int(timeout / 0.02) // 20ms per attempt
 
+        for attempt in 0..<maxAttempts {
+            if let test = testOperations[identifier], !test.testID.isEmpty {
+                let elapsedMs = Int(Date().timeIntervalSince(startTime) * 1000)
+                Logger.shared.info("✅ Test '\(identifier)' found with ID after \(elapsedMs)ms (\(attempt) polls)")
+                return test
+            }
 
+            try await Task.sleep(nanoseconds: 20_000_000) // 20ms
 
+            // Check for task cancellation
+            try Task.checkCancellation()
+        }
 
-
-
+        throw OperationTrackerError.testTimeout(identifier: identifier, seconds: timeout)
+    }
 
 
 
@@ -188,14 +216,14 @@ actor OperationTracker {
     /// Errors that can occur during operation tracking
     enum OperationTrackerError: LocalizedError {
         case suiteTimeout(identifier: String, seconds: TimeInterval)
-
+        case testTimeout(identifier: String, seconds: TimeInterval)
 
         var errorDescription: String? {
             switch self {
             case .suiteTimeout(let identifier, let seconds):
                 return "Suite '\(identifier)' not registered after \(seconds) seconds timeout"
-
-
+            case .testTimeout(let identifier, let seconds):
+                return "Test '\(identifier)' not registered after \(seconds) seconds timeout"
             }
         }
     }
