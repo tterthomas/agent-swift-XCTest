@@ -32,6 +32,7 @@ open class RPListener: NSObject, XCTestObservation {
     
     // Flag to ensure launch is created only once
     private var isLaunchCreated = false
+    private var completedTestIdentifiers: [String: Int] = [:]
     
     public override init() {
         super.init()
@@ -614,44 +615,44 @@ open class RPListener: NSObject, XCTestObservation {
         }
     }
     
-    public func testCaseDidFinish(_ testCase: XCTestCase) {
-        guard let asyncService = reportingService else {
-            Logger.shared.warning("⚠️ Reporting disabled: Test completion for '\(testCase.name)' will not be reported to ReportPortal")
-            return
-        }
-        
-        // Finalize test with status update and cleanup
-        Task {
-            // Build identifier
-            let testName = extractTestName(from: testCase)
-            let className = String(describing: type(of: testCase))
-            let identifier = "\(className).\(testName)"
-            
-            // Retrieve test operation from tracker
-            guard var operation = await operationTracker.getTest(identifier: identifier) else {
-                Logger.shared.error("Test operation not found in tracker: \(identifier)")
-                return
-            }
+public func testCaseDidFinish(_ testCase: XCTestCase) {
+      guard let asyncService = reportingService else {
+          Logger.shared.warning("⚠️  Reporting disabled: Test completion for '\(testCase.name)' will not be reported to ReportPortal")
+          return
+      }
 
-            do {
-                // Update status based on test result
-                let hasSucceeded = testCase.testRun?.hasSucceeded ?? false
-                operation.status = hasSucceeded ? .passed : .failed
+      let retryTestName = extractTestName(from: testCase)
+      let retryClassName = String(describing: type(of: testCase))
+      let retryIdentifier = "\(retryClassName).\(retryTestName)"
+      let currentCount = completedTestIdentifiers[retryIdentifier] ?? 0
+      let isLastRun = currentCount >= 2
+      completedTestIdentifiers[retryIdentifier] = currentCount + 1
 
-                // Finish test in ReportPortal
-                // Note: Screenshots are uploaded directly in failure methods, not here
-                try await asyncService.finishTest(operation: operation)
+      Task {
+          let testName = extractTestName(from: testCase)
+          let className = String(describing: type(of: testCase))
+          let identifier = "\(className).\(testName)"
 
-                // Unregister test from tracker (cleanup)
-                await operationTracker.unregisterTest(identifier: identifier)
+          guard var operation = await operationTracker.getTest(identifier: identifier) else {
+              Logger.shared.error("Test operation not found in tracker: \(identifier)")
+              return
+          }
 
-                let statusString = operation.status?.rawValue ?? "UNKNOWN"
-                Logger.shared.info("Test finished: \(operation.testID) with status: \(statusString)", correlationID: operation.correlationID)
-            } catch {
-                Logger.shared.error("Failed to finish test '\(testCase.name)': \(error.localizedDescription)", correlationID: operation.correlationID)
-            }
-        }
-    }
+          do {
+              let hasSucceeded = testCase.testRun?.hasSucceeded ?? false
+              operation.status = isLastRun ? (hasSucceeded ? .passed : .failed)
+                                           : (hasSucceeded ? .passed : .skipped)
+
+              try await asyncService.finishTest(operation: operation)
+              await operationTracker.unregisterTest(identifier: identifier)
+
+              let statusString = operation.status?.rawValue ?? "UNKNOWN"
+              Logger.shared.info("Test finished: \(operation.testID) with status: \(statusString)", correlationID: operation.correlationID)
+          } catch {
+              Logger.shared.error("Failed to finish test '\(testCase.name)': \(error.localizedDescription)", correlationID: operation.correlationID)
+          }
+      }
+  }
     
     public func testSuiteDidFinish(_ testSuite: XCTestSuite) {
         guard let asyncService = reportingService else {
