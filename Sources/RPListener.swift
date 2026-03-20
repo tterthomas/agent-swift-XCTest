@@ -33,6 +33,9 @@ open class RPListener: NSObject, XCTestObservation {
     // Flag to ensure launch is created only once
     private var isLaunchCreated = false
     private var completedTestIdentifiers: [String: Int] = [:]
+    // Tracks the current run number for each test (base identifier -> run count)
+    // Used to generate run-specific identifiers that prevent retry overwrites in OperationTracker
+    private var currentRunCounters: [String: Int] = [:]
     
     public override init() {
         super.init()
@@ -322,32 +325,42 @@ open class RPListener: NSObject, XCTestObservation {
             return
         }
         
-        Logger.shared.info("🔄 Processing test case: '\(testCase.name)' (starting async Task)")
-        
+        // Compute run-specific identifier SYNCHRONOUSLY before creating the Task.
+        // This prevents the next retry's testCaseWillStart from overwriting the same
+        // base identifier in OperationTracker before our failure-log Task can read it.
+        let wcTestName = extractTestName(from: testCase)
+        let wcClassName = String(describing: type(of: testCase))
+        let wcBaseIdentifier = "\(wcClassName).\(wcTestName)"
+        let wcRunNumber = (currentRunCounters[wcBaseIdentifier] ?? -1) + 1
+        currentRunCounters[wcBaseIdentifier] = wcRunNumber
+        let wcIdentifier = "\(wcBaseIdentifier)-run-\(wcRunNumber)"
+
+        Logger.shared.info("🔄 Processing test case: '\(testCase.name)' run-\(wcRunNumber) (starting async Task)")
+
         // Register test case with OperationTracker for parallel execution
         Task {
             // CRITICAL: Wait for launch to be ready before creating any tests
             // This ensures V2 API launch exists before we start reporting tests
             // Using waitUntilReady() since launch creation happens in testBundleWillStart
             await LaunchManager.shared.waitUntilReady()
-            
+
             // Verify launch is actually ready
             let isReady = await LaunchManager.shared.isReady()
             guard isReady else {
                 Logger.shared.warning("⚠️  Launch not ready, skipping test creation for: \(testCase.name)")
                 return
             }
-            
+
             // Get launch ID (synchronous access after launch is ready)
             let launchID = launchManager.launchID
-            
+
             do {
                 let correlationID = UUID()
 
-                // Extract test information
-                let testName = extractTestName(from: testCase)
-                let className = String(describing: type(of: testCase))
-                let identifier = "\(className).\(testName)"
+                // Use run-specific identifier (computed synchronously before this Task)
+                let testName = wcTestName
+                let className = wcClassName
+                let identifier = wcIdentifier
 
                 // DIAGNOSTIC: Log test details
                 Logger.shared.info("""
@@ -355,6 +368,7 @@ open class RPListener: NSObject, XCTestObservation {
                     - testCase.name: '\(testCase.name)'
                     - testName: '\(testName)'
                     - className: '\(className)'
+                    - identifier: '\(identifier)'
                     - Looking for suite: '\(className)'
                     """, correlationID: correlationID)
 
@@ -487,20 +501,24 @@ open class RPListener: NSObject, XCTestObservation {
             Logger.shared.warning("⚠️ Reporting disabled: Test issue for '\(testCase.name)' will not be reported to ReportPortal")
             return
         }
-        
+
+        // Compute run-specific identifier synchronously (matches the identifier used in testCaseWillStart)
+        let issueTestName = extractTestName(from: testCase)
+        let issueClassName = String(describing: type(of: testCase))
+        let issueBaseIdentifier = "\(issueClassName).\(issueTestName)"
+        let issueRunNumber = currentRunCounters[issueBaseIdentifier] ?? 0
+        let issueIdentifier = "\(issueBaseIdentifier)-run-\(issueRunNumber)"
+
         // Async attachment upload for concurrent execution
         Task {
             // Get launch ID (lazy initialization on first access)
             let launchID = launchManager.launchID
 
-            // Build identifier to get test operation
-            let testName = extractTestName(from: testCase)
-            let className = String(describing: type(of: testCase))
-            let identifier = "\(className).\(testName)"
-
-            guard let operation = await operationTracker.getTest(identifier: identifier) else {
+            // Use run-specific identifier and wait for valid testID from ReportPortal API
+            let identifier = issueIdentifier
+            guard let operation = try? await operationTracker.waitForTest(identifier: identifier) else {
                 Logger.shared.warning("""
-                    ⚠️ Cannot report test issue: Test operation not found for '\(identifier)'
+                    ⚠️ Cannot report test issue: Test operation not found or timed out for '\(identifier)'
                     Reason: Test may not have been registered successfully
                     Impact: Test failure details will not be visible in ReportPortal
                     """)
@@ -555,20 +573,24 @@ open class RPListener: NSObject, XCTestObservation {
             Logger.shared.warning("⚠️ Reporting disabled: Test failure for '\(testCase.name)' will not be reported to ReportPortal")
             return
         }
-        
+
+        // Compute run-specific identifier synchronously (matches the identifier used in testCaseWillStart)
+        let failTestName = extractTestName(from: testCase)
+        let failClassName = String(describing: type(of: testCase))
+        let failBaseIdentifier = "\(failClassName).\(failTestName)"
+        let failRunNumber = currentRunCounters[failBaseIdentifier] ?? 0
+        let failIdentifier = "\(failBaseIdentifier)-run-\(failRunNumber)"
+
         // Async attachment upload for concurrent execution
         Task {
             // Get launch ID (lazy initialization on first access)
             let launchID = launchManager.launchID
 
-            // Build identifier to get test operation
-            let testName = extractTestName(from: testCase)
-            let className = String(describing: type(of: testCase))
-            let identifier = "\(className).\(testName)"
-
-            guard let operation = await operationTracker.getTest(identifier: identifier) else {
+            // Use run-specific identifier and wait for valid testID from ReportPortal API
+            let identifier = failIdentifier
+            guard let operation = try? await operationTracker.waitForTest(identifier: identifier) else {
                 Logger.shared.warning("""
-                    ⚠️ Cannot report test failure: Test operation not found for '\(identifier)'
+                    ⚠️ Cannot report test failure: Test operation not found or timed out for '\(identifier)'
                     Reason: Test may not have been registered successfully
                     Impact: Test failure details will not be visible in ReportPortal
                     """)
@@ -623,18 +645,20 @@ public func testCaseDidFinish(_ testCase: XCTestCase) {
 
       let retryTestName = extractTestName(from: testCase)
       let retryClassName = String(describing: type(of: testCase))
-      let retryIdentifier = "\(retryClassName).\(retryTestName)"
-      let currentCount = completedTestIdentifiers[retryIdentifier] ?? 0
+      let retryBaseIdentifier = "\(retryClassName).\(retryTestName)"
+      let currentCount = completedTestIdentifiers[retryBaseIdentifier] ?? 0
       let isLastRun = currentCount >= 2
-      completedTestIdentifiers[retryIdentifier] = currentCount + 1
+      completedTestIdentifiers[retryBaseIdentifier] = currentCount + 1
+
+      // Use run-specific identifier (matches testCaseWillStart for this run)
+      let tcRunNumber = currentRunCounters[retryBaseIdentifier] ?? 0
+      let tcIdentifier = "\(retryBaseIdentifier)-run-\(tcRunNumber)"
 
       Task {
-          let testName = extractTestName(from: testCase)
-          let className = String(describing: type(of: testCase))
-          let identifier = "\(className).\(testName)"
+          let identifier = tcIdentifier
 
-          guard var operation = await operationTracker.getTest(identifier: identifier) else {
-              Logger.shared.error("Test operation not found in tracker: \(identifier)")
+          guard var operation = try? await operationTracker.waitForTest(identifier: identifier) else {
+              Logger.shared.error("Test operation not found or timed out in tracker: \(identifier)")
               return
           }
 
