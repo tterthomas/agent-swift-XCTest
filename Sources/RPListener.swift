@@ -12,45 +12,33 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 //
+
 import Foundation
 import XCTest
+
 open class RPListener: NSObject, XCTestObservation {
+
     private var reportingService: ReportingService?
+
     // Shared actors for parallel execution
     private let launchManager = LaunchManager.shared
     private let operationTracker = OperationTracker.shared
+
     // Root suite ID stored directly (no coordination needed for single bundle)
     private var rootSuiteID: String?
     
     // Task for root suite creation (to synchronize child suites)
     private var rootSuiteCreationTask: Task<String, Error>?
-
+    
     // Flag to ensure launch is created only once
     private var isLaunchCreated = false
     private var completedTestIdentifiers: [String: Int] = [:]
     // Tracks the current run number for each test (base identifier -> run count)
     // Used to generate run-specific identifiers that prevent retry overwrites in OperationTracker
     private var currentRunCounters: [String: Int] = [:]
-
+    
     public override init() {
         super.init()
-
-    
-          
-            
-    
-
-          
-          Expand Down
-          
-            
-    
-
-          
-          Expand Up
-    
-    @@ -320,40 +324,53 @@ open class RPListener: NSObject, XCTestObservation {
-  
         
         // XCTestObservationCenter requires main thread for observer registration
         // init() is typically called on main thread, but ensure it with precondition
@@ -156,12 +144,14 @@ open class RPListener: NSObject, XCTestObservation {
                 } else {
                     attributes = MetadataCollector.collectDeviceAttributes()
                 }
+
                 // Get test plan name for launch name enhancement
                 let testPlanName = MetadataCollector.getTestPlanName()
                 let enhancedLaunchName = self.buildEnhancedLaunchName(
                     baseLaunchName: configuration.launchName,
                     testPlanName: testPlanName
                 )
+
                 // Create launch via V2 API with predefined UUID
                 // 409 Conflict is handled gracefully by LaunchManager (means launch exists = success)
                 let reportedLaunchID = try await reportingService.startLaunch(
@@ -244,10 +234,12 @@ open class RPListener: NSObject, XCTestObservation {
             do {
                 let correlationID = UUID()
                 let isRootSuite = testSuite.name.contains(".xctest")
+
                 // Build consistent identifier: use suite name as-is
                 // For test class suites, XCTest provides the class name
                 // For root suites, it's the bundle name with .xctest extension
                 let identifier = testSuite.name
+
                 // DIAGNOSTIC: Log suite details to understand naming
                 Logger.shared.info("""
                     📦 SUITE STARTING:
@@ -256,10 +248,12 @@ open class RPListener: NSObject, XCTestObservation {
                     - isRoot: \(isRootSuite)
                     - testCount: \(testSuite.testCaseCount)
                     """, correlationID: correlationID)
+
                 // SIMPLIFIED HIERARCHY: All test class suites at root level
                 // Root .xctest bundle suite is often skipped by test plans/CLI execution
                 // Creating flat structure: Launch → Test Class Suites → Tests
                 let parentSuiteID: String? = nil
+
                 if isRootSuite {
                     Logger.shared.info("📦 ROOT BUNDLE SUITE DETECTED: \(testSuite.name) (will be skipped - using flat hierarchy)", correlationID: correlationID)
                     // Don't create the root bundle suite - it's redundant
@@ -267,6 +261,7 @@ open class RPListener: NSObject, XCTestObservation {
                 } else {
                     Logger.shared.info("📦 Creating TEST CLASS SUITE at root level", correlationID: correlationID)
                 }
+
                 // Create suite operation
                 var operation = SuiteOperation(
                     correlationID: correlationID,
@@ -278,9 +273,12 @@ open class RPListener: NSObject, XCTestObservation {
                     childTestIDs: [],
                     metadata: [:]
                 )
+
                 // Register suite in tracker with consistent identifier
                 await operationTracker.registerSuite(operation, identifier: identifier)
+
                 Logger.shared.info("✅ Suite registered: '\(identifier)' → ID: pending", correlationID: correlationID)
+
                 // Create task for suite creation
                 let suiteCreationTask = Task<String, Error> {
                     // Start suite in ReportPortal
@@ -300,14 +298,17 @@ open class RPListener: NSObject, XCTestObservation {
                 
                 // Execute the task and get suite ID
                 let suiteID = try await suiteCreationTask.value
+
                 // Update operation with suite ID
                 operation.suiteID = suiteID
                 await operationTracker.updateSuite(operation, identifier: identifier)
+
                 // Store root suite ID if this is root
                 if isRootSuite {
                     self.rootSuiteID = suiteID
                     Logger.shared.info("🎯 Root suite ID stored: \(suiteID)", correlationID: correlationID)
                 }
+
                 Logger.shared.info("✅ Suite started: \(suiteID)", correlationID: correlationID)
             } catch {
                 Logger.shared.error("Failed to start suite '\(testSuite.name)': \(error.localizedDescription)")
@@ -373,23 +374,6 @@ open class RPListener: NSObject, XCTestObservation {
                     - Looking for suite: '\(className)'
                     """, correlationID: correlationID)
 
-
-    
-          
-            
-    
-
-          
-          Expand Down
-          
-            
-    
-
-          
-          Expand Up
-    
-    @@ -389,8 +406,8 @@ open class RPListener: NSObject, XCTestObservation {
-  
                 // Get parent suite ID (from current suite context)
                 guard let suiteID = await getCurrentSuiteID(for: className) else {
                     let activeSuites = await operationTracker.getAllSuiteIdentifiers()
@@ -421,29 +405,12 @@ open class RPListener: NSObject, XCTestObservation {
                 
                 // Register test in tracker
                 await operationTracker.registerTest(operation, identifier: identifier)
-
+                
                 // Start test in ReportPortal; wcRunNumber > 0 means xcodebuild is on a retry pass
                 let testID = try await asyncService.startTest(operation: operation, launchID: launchID, isRetry: wcRunNumber > 0)
-
+                
                 // Update operation with test ID
                 operation.testID = testID
-
-    
-          
-            
-    
-
-          
-          Expand Down
-          
-            
-    
-
-          
-          Expand Up
-    
-    @@ -486,20 +503,33 @@ open class RPListener: NSObject, XCTestObservation {
-  
                 await operationTracker.updateTest(operation, identifier: identifier)
                 
                 Logger.shared.info("Test started: \(testID)", correlationID: correlationID)
@@ -477,10 +444,12 @@ open class RPListener: NSObject, XCTestObservation {
         } catch {
             Logger.shared.warning("Suite '\(className)' not registered after waiting: \(error.localizedDescription)")
         }
+
         // If exact match failed after waiting, check all registered suites for potential matches
         // This handles edge cases where XCTest might provide different naming
         let allSuites = await operationTracker.getAllSuiteIdentifiers()
         Logger.shared.debug("Searching for suite matching class '\(className)' in: [\(allSuites.joined(separator: ", "))]")
+
         // Try to find a suite that contains the class name
         for suiteIdentifier in allSuites {
             if suiteIdentifier.contains(className) || className.contains(suiteIdentifier) {
@@ -490,6 +459,7 @@ open class RPListener: NSObject, XCTestObservation {
                 }
             }
         }
+
         // Last resort: use root suite ID if available
         // This happens when test class suite failed to start but root suite exists
         if let rootID = self.rootSuiteID {
@@ -504,6 +474,7 @@ open class RPListener: NSObject, XCTestObservation {
                 """)
             return rootID
         }
+
         Logger.shared.error("""
             ❌ CRITICAL: No suite found for class '\(className)' and no root suite available.
             Tests cannot be reported to ReportPortal.
@@ -562,30 +533,15 @@ open class RPListener: NSObject, XCTestObservation {
                     Reason: Test may not have been registered successfully
                     Impact: Test failure details will not be visible in ReportPortal
                     """)
-
-    
-          
-            
-    
-
-          
-          Expand Down
-          
-            
-    
-
-          
-          Expand Up
-    
-    @@ -554,20 +584,33 @@ open class RPListener: NSObject, XCTestObservation {
-  
                 return
             }
+
             do {
                 let lineNumberString = issue.sourceCodeContext.location?.lineNumber != nil
                 ? " on line \(issue.sourceCodeContext.location!.lineNumber)"
                 : ""
                 let errorMessage = "Test '\(String(describing: issue.description))' failed\(lineNumberString), \(issue.description)"
+
                 // Post error log with async API (non-blocking)
                 try await asyncService.postLog(
                     message: errorMessage,
@@ -594,12 +550,14 @@ open class RPListener: NSObject, XCTestObservation {
                     launchID: launchID,
                     correlationID: operation.correlationID
                 )
+
                 // Capture and upload screenshot directly (v3.x approach)
                 #if canImport(UIKit)
                 do {
                     let screenshot = await XCUIScreen.main.screenshot()
                     let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
                     let filename = "failure_screenshot_\(timestamp).png"
+
                     try await asyncService.postScreenshot(
                         screenshotData: await screenshot.pngRepresentation,
                         filename: filename,
@@ -612,6 +570,7 @@ open class RPListener: NSObject, XCTestObservation {
                     Logger.shared.warning("Failed to upload screenshot: \(error.localizedDescription)", correlationID: operation.correlationID)
                 }
                 #endif
+
                 Logger.shared.info("TEST FAIL reported", correlationID: operation.correlationID)
             } catch {
                 Logger.shared.error("Failed to report TEST FAIL: \(error.localizedDescription)", correlationID: operation.correlationID)
@@ -655,28 +614,13 @@ open class RPListener: NSObject, XCTestObservation {
                     Reason: Test may not have been registered successfully
                     Impact: Test failure details will not be visible in ReportPortal
                     """)
-
-    
-          
-            
-    
-
-          
-          Expand Down
-          
-            
-    
-
-          
-          Expand Up
-    
-    @@ -614,44 +657,51 @@ open class RPListener: NSObject, XCTestObservation {
-  
                 return
             }
+
             do {
                 let fileInfo = filePath != nil ? " in \(URL(fileURLWithPath: filePath!).lastPathComponent)" : ""
                 let errorMessage = "Test failed on line \(lineNumber)\(fileInfo): \(description)"
+
                 // Post error log with async API (non-blocking)
                 try await asyncService.postLog(
                     message: errorMessage,
@@ -685,12 +629,14 @@ open class RPListener: NSObject, XCTestObservation {
                     launchID: launchID,
                     correlationID: operation.correlationID
                 )
+
                 // Capture and upload screenshot directly (v3.x approach, works on iOS 17+)
                 #if canImport(UIKit)
                 do {
                     let screenshot = await XCUIScreen.main.screenshot()
                     let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
                     let filename = "failure_screenshot_\(timestamp).png"
+
                     try await asyncService.postScreenshot(
                         screenshotData: await screenshot.pngRepresentation,
                         filename: filename,
@@ -703,13 +649,14 @@ open class RPListener: NSObject, XCTestObservation {
                     Logger.shared.warning("Failed to upload screenshot: \(error.localizedDescription)", correlationID: operation.correlationID)
                 }
                 #endif
+
                 Logger.shared.info("Failure reported", correlationID: operation.correlationID)
             } catch {
                 Logger.shared.error("Failed to report failure: \(error.localizedDescription)", correlationID: operation.correlationID)
             }
         }
     }
-
+    
 public func testCaseDidFinish(_ testCase: XCTestCase) {
       guard let asyncService = reportingService else {
           Logger.shared.warning("⚠️  Reporting disabled: Test completion for '\(testCase.name)' will not be reported to ReportPortal")
@@ -755,20 +702,9 @@ public func testCaseDidFinish(_ testCase: XCTestCase) {
           }
       }
   }
-
+    
     public func testSuiteDidFinish(_ testSuite: XCTestSuite) {
         guard let asyncService = reportingService else {
-
-    
-          
-            
-    
-
-          
-          Expand Down
-    
-    
-  
             Logger.shared.warning("⚠️ Reporting disabled: Test suite completion for '\(testSuite.name)' will not be reported to ReportPortal")
             return
         }
@@ -836,8 +772,10 @@ public func testCaseDidFinish(_ testCase: XCTestCase) {
             Logger.shared.info("⏰ Grace period completed - proceeding with launch finalization")
             
             let launchID = launchManager.launchID
+
             // ReportPortal will calculate the final status from all test results
             Logger.shared.info("📊 Finalizing launch \(launchID)")
+
             do {
                 if let asyncService = reportingService {
                     try await asyncService.finalizeLaunch(launchID: launchID, status: .passed)
